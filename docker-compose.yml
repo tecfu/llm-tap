@@ -1,0 +1,14 @@
+services:
+  tap:
+    image: mitmproxy/mitmproxy:latest
+    container_name: llm-tap
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - UPSTREAM
+    volumes:
+      - ./tap.py:/tapper.py:ro
+      - /tmp:/tmp
+    command: >-
+      mitmdump --mode reverse:${UPSTREAM}@${TAP_PORT}
+      -s /tapper.py --set confdir=/tmp/mitmconf
