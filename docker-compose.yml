@@ -5,10 +5,10 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
-      - UPSTREAM
+      - UPSTREAM=http://127.0.0.1:${PORT:-8000}
     volumes:
       - ./tap.py:/tapper.py:ro
       - /tmp:/tmp
     command: >-
-      mitmdump --mode reverse:${UPSTREAM}@${TAP_PORT}
+      mitmdump --mode reverse:http://127.0.0.1:${PORT:-8000}@${TAP_PORT:-8001}
       -s /tapper.py --set confdir=/tmp/mitmconf

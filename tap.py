@@ -19,8 +19,51 @@ from mitmproxy import http
 _port = os.environ.get("UPSTREAM", "").rsplit(":", 1)[-1].split("/")[0]
 LOG = Path(f"/tmp/llm-tap/{_port if _port.isdigit() else 'tap'}.jsonl")
 _last = None  # wall time of the previous record → dt field
+# ponytail: prefix-match known prompt injectors (context-mode) so .prompt is the
+# user's typed text, not their appended reminder — extend the tuple if injectors appear
+_INJECTED = ("context-mode active.", "<session_state")
+
+
+def _iso(epoch):
+    """Local ISO stamp with milliseconds: 2026-09-01T11:20:14.123"""
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(epoch)) + f".{int(epoch * 1000) % 1000:03d}"
+
+
+def _hms(epoch):
+    return _iso(epoch)[11:]
+
 SKIP = ("/health", "/metrics", "/docs", "/redoc", "/openapi.json", "/version",
         "/tokenize", "/detokenize", "/v1/models", "/load", "/ping")
+
+
+def _cut(s, n):
+    return (s or "").replace("\n", " ")[:n]
+
+
+def _prompt_text(body):
+    prompt = body.get("prompt")  # /v1/completions
+    if prompt is None:
+        prompt = next((m["text"] for m in reversed(_ctx(body))
+                       if m["role"] == "user" and not m["text"].startswith(_INJECTED)), "")
+    if isinstance(prompt, list):
+        prompt = "".join(map(str, prompt))
+    return prompt
+
+
+def _echo_in(flow):
+    # printed the instant the request ARRIVES — the gap to the OUT line is engine latency
+    print(f"\x1b[2m{_hms(flow.metadata['t0'])}\x1b[0m \x1b[36mIN    {_cut(flow.metadata['prompt'], 140)}\x1b[0m", flush=True)
+
+
+def _echo_out(rec):
+    # printed when the response COMPLETES
+    ts = rec["ts"][11:23]
+    if rec["reasoning"]:
+        print(f"\x1b[2m{ts}\x1b[0m \x1b[35mTHINK {_cut(rec['reasoning'], 160)}\x1b[0m", flush=True)
+    meta = f"\x1b[2m {rec['client']} {rec['model']}" + (f" +{rec['dt']}s" if rec.get("dt") is not None else "") + "\x1b[0m"
+    print(f"\x1b[2m{ts}\x1b[0m \x1b[32mOUT   {_cut(rec['result'], 160)}\x1b[0m{meta}", flush=True)
+    if rec["status"] != 200:
+        print(f"\x1b[2m{ts}\x1b[0m \x1b[31mSTATUS {rec['status']}\x1b[0m", flush=True)
 
 
 def _texts(content):
@@ -71,6 +114,8 @@ def request(flow: http.HTTPFlow):
     except Exception:
         flow.metadata["body"] = {}
     flow.metadata["t0"] = time.time()
+    flow.metadata["prompt"] = _prompt_text(flow.metadata["body"])
+    _echo_in(flow)
 
 
 def responseheaders(flow: http.HTTPFlow):
@@ -104,18 +149,14 @@ def response(flow: http.HTTPFlow):
         result = msg.get("content") or choice.get("text") or ""
         usage, model = r.get("usage"), r.get("model", model)
 
-    prompt = body.get("prompt")  # /v1/completions
-    if prompt is None:
-        prompt = next((m["text"] for m in reversed(_ctx(body)) if m["role"] == "user"), "")
-    if isinstance(prompt, list):
-        prompt = "".join(map(str, prompt))
+    prompt = flow.metadata.get("prompt", "")
 
     now = time.time()
     global _last
-    dt = round(now - _last, 1) if _last is not None else None
+    dt = round(now - _last, 3) if _last is not None else None
     _last = now
-    rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)),
-           "req_ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(flow.metadata.get("t0", now))),
+    rec = {"ts": _iso(now),
+           "req_ts": _iso(flow.metadata.get("t0", now)),
            "dt": dt,
            "client": flow.client_conn.peername[0],
            "model": model,
@@ -130,3 +171,4 @@ def response(flow: http.HTTPFlow):
     LOG.parent.mkdir(parents=True, exist_ok=True)  # self-heal after tmp cleaners
     with LOG.open("a") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    _echo_out(rec)

@@ -16,6 +16,23 @@
   engines without mixing logs; `tail.sh` picks the file the same way.
 - Timestamps: records carry `req_ts` (request arrival), `ts` (response done)
   and `dt` (gap since the previous record); `tail.sh` shows `HH:MM:SS → HH:MM:SS +gap`.
+- Ports swapped: tap now listens on 8001 (where pi points), engine back on
+  8000 (its native port). Engine compose `PORT` restored to 8000.
+- Records echoed colorized to stdout — `docker logs -f llm-tap` is now a live
+  view, no tail script needed.
+- IN echoed the instant the request arrives (own timestamp); THINK/OUT at
+  completion (own timestamp) — the IN→OUT gap in the log is real engine
+  latency; dangling IN = request still running or client aborted.
+- All timestamps carry milliseconds (`ts`, `req_ts`, log echoes; `dt` to 1 ms).
+- `.prompt` skips context-mode's injected reminder messages (`context-mode
+  active.` / `<session_state` prefixes) so the echo shows the user's typed
+  prompt from round one, not the reminder.
+- `tail.sh` deleted — every operation is a `docker compose` command: tail =
+  `docker compose logs -f --no-log-prefix tap`, clear = `docker compose exec
+  tap sh -c 'rm -f /tmp/llm-tap/*.jsonl'`.
+- Localhost-only: `UPSTREAM` URL replaced by a port argument —
+  `PORT=8080 docker compose up -d` re-points the tap at
+  `http://127.0.0.1:8080` (log file follows the port); no remote-tail docs.
 
 ## 2026-09-01 — created (as part of qwen38-27b-rtx3090)
 
