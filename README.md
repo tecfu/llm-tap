@@ -11,6 +11,72 @@ agents ──► :TAP_PORT (llm-tap) ──► 127.0.0.1:$PORT (engine)
                      └──► $TAP_LOG (JSONL)
 ```
 
+## Ubuntu APT installation
+
+The project can publish signed `.deb` packages for Ubuntu 22.04 (Jammy),
+24.04 (Noble), and 26.04 (Resolute) on `amd64`. Releases are built by GitHub
+Actions and published as a static APT repository on GitHub Pages.
+
+The repository signing key is published by the repository itself. Before the
+first release is published, configure the `APT_GPG_PRIVATE_KEY` GitHub Actions
+secret with the ASCII-armored private key used to sign the repository.
+
+After the first package release is published, install the public key and APT
+source:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://tecfu.github.io/tap/apt-key.asc \
+  | sudo gpg --dearmor -o /etc/apt/keyrings/llm-tap.gpg
+
+. /etc/os-release
+sudo tee /etc/apt/sources.list.d/llm-tap.sources >/dev/null <<EOF
+Types: deb
+URIs: https://tecfu.github.io/tap
+Suites: ${VERSION_CODENAME}
+Components: main
+Architectures: amd64
+Signed-By: /etc/apt/keyrings/llm-tap.gpg
+EOF
+
+sudo apt update
+sudo apt install llm-tap
+```
+
+Then configure and start the service:
+
+```bash
+sudo install -d /etc/llm-tap
+sudo tee /etc/llm-tap/llm-tap.env >/dev/null <<'EOF'
+UPSTREAM=http://127.0.0.1:8000
+TAP_PORT=8001
+TAP_LOG=/var/log/llm-tap/8000.jsonl
+EOF
+sudo systemctl enable --now llm-tap
+```
+
+The package creates the `llm-tap` service account, log directory, CLI at
+`/usr/bin/llm-tap`, and systemd unit. Python dependencies are bundled in the
+package's application environment so installation does not run pip at install
+time.
+
+### Publishing releases
+
+Create and push a version tag such as `v0.1.0`. The APT workflow builds one
+package for each supported Ubuntu release and publishes signed repository
+metadata to the `gh-pages` branch.
+
+The first publication requires:
+
+1. Add an `APT_GPG_PRIVATE_KEY` repository Actions secret containing the
+   ASCII-armored private signing key.
+2. Enable GitHub Pages for the repository using the `gh-pages` branch as the
+   publishing source.
+3. Push a `v*` tag to trigger the build and publication workflow.
+
+Keep the private key outside the repository. Only the public key is published
+at `apt-key.asc`.
+
 ## Native installation
 
 The native distribution runs directly on Linux without Docker. Python 3.10+
