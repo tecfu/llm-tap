@@ -1,0 +1,21 @@
+[Unit]
+Description=LLM Tap OpenAI-compatible inference capture proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=llm-tap
+Group=llm-tap
+EnvironmentFile=-/etc/llm-tap/llm-tap.env
+ExecStart=/usr/bin/llm-tap --foreground
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/llm-tap
+
+[Install]
+WantedBy=multi-user.target
