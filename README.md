@@ -94,10 +94,6 @@ Then run it exactly as shown above:
 llm-tap --upstream http://127.0.0.1:8000 --listen-port 8001
 ```
 
-## Docker
-
-Docker is retained for legacy deployments. The native `llm-tap` package is the preferred installation method.
-
 ## Releases and APT repository
 
 Releases are built by GitHub Actions and published as a signed static APT repository on GitHub Pages. Push a version tag such as `v0.1.1` to publish a release.
