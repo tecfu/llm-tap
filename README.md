@@ -7,7 +7,7 @@ A native Linux daemon for capturing **OpenAI-compatible inference traffic** from
 ```text
 agents ──► :8001 (llm-tap) ──► 127.0.0.1:8000 (engine)
                     │
-                    └──► /var/log/llm-tap/8000.jsonl
+                    └──► ~/.local/state/llm-tap/8000.jsonl
 ```
 
 ## Install on Ubuntu
@@ -35,100 +35,74 @@ sudo apt update
 sudo apt install llm-tap
 ```
 
-The package includes the application and its Python runtime dependencies, so installing `llm-tap` does not require Docker or running `pip` on the host.
+The package includes the application and its Python runtime dependencies. Installation method does not change the `llm-tap` command or its configuration.
 
-### Configure and start the daemon
+## Run
 
-Create `/etc/llm-tap/llm-tap.env`:
+The same command works whether `llm-tap` came from APT, pip, or a source checkout:
 
 ```bash
-sudo install -d /etc/llm-tap
-sudo tee /etc/llm-tap/llm-tap.env >/dev/null <<'EOF'
+llm-tap --upstream http://127.0.0.1:8000 --listen-port 8001
+```
+
+Then point your OpenAI-compatible client at `http://127.0.0.1:8001`.
+
+Configuration is available through the same CLI flags or environment variables everywhere:
+
+- `--upstream` / `UPSTREAM` — upstream inference server (default: `http://127.0.0.1:8000`)
+- `--listen-port` / `TAP_PORT` — local listening port (default: `8001`)
+- `--log` / `TAP_LOG` — JSONL output path
+- `TAP_LOG_DIR` — directory used when `TAP_LOG` is not set
+
+The default log is written beneath `~/.local/state/llm-tap`, so an ordinary user can run the command without special filesystem permissions. Set `--log` when you want another location.
+
+## Run with systemd
+
+For a machine-wide daemon, systemd is optional process supervision around the same `llm-tap` command. The Ubuntu package includes the unit and creates the `llm-tap` service account and `/var/log/llm-tap` directory.
+
+Configure `/etc/llm-tap/llm-tap.env` only if you want to run it as a system service:
+
+```text
 UPSTREAM=http://127.0.0.1:8000
 TAP_PORT=8001
 TAP_LOG=/var/log/llm-tap/8000.jsonl
-EOF
 ```
 
-Then start it with systemd:
+Then:
 
 ```bash
 sudo systemctl enable --now llm-tap
-systemctl status llm-tap
-journalctl -u llm-tap -f
 ```
 
-The package creates the `llm-tap` service account, `/var/log/llm-tap` log directory, `/usr/bin/llm-tap` command, and systemd unit.
+The service uses the same executable and configuration interface as an interactive invocation.
 
-## Native installation from source
+## Install from source / pip
 
-For development or installation outside the APT repository, install directly from a checkout. Python 3.10+ is required.
+For development or installation outside the APT repository:
 
 ```bash
 git clone https://github.com/tecfu/llm-tap.git
 cd llm-tap
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install --upgrade pip
 python -m pip install .
 ```
 
-Run the daemon in the foreground:
+Then run it exactly as shown above:
 
 ```bash
-llm-tap --upstream http://127.0.0.1:8000 --listen-port 8001 \
-  --log /var/log/llm-tap/8000.jsonl
+llm-tap --upstream http://127.0.0.1:8000 --listen-port 8001
 ```
 
-For production installations, prefer the Ubuntu package so systemd integration, the service account, log directory, and bundled dependencies are installed consistently.
+## Docker
 
-## Configuration
-
-The launcher accepts these environment variables:
-
-- `UPSTREAM` — upstream inference server URL (default: `http://127.0.0.1:8000`)
-- `TAP_PORT` — local listening port (default: `8001`)
-- `TAP_LOG_DIR` — default directory for native JSONL logs (default: `/var/log/llm-tap`)
-- `TAP_LOG` — complete JSONL path; overrides the generated log path
-
-CLI arguments override the corresponding defaults. `--foreground` is available for service-manager deployments; the launcher already runs in the foreground by default.
-
-## systemd
-
-The repository includes `packaging/llm-tap.service`. The Ubuntu package installs and configures this unit automatically.
-
-For a manual source installation, create a dedicated service account and log directory, install the application, then copy the unit:
-
-```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin llm-tap
-sudo install -d -o llm-tap -g llm-tap /var/log/llm-tap
-sudo install -d /etc/llm-tap
-sudo install -m 0644 packaging/llm-tap.service /etc/systemd/system/llm-tap.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now llm-tap
-```
-
-Configure `/etc/llm-tap/llm-tap.env`:
-
-```ini
-UPSTREAM=http://127.0.0.1:8000
-TAP_PORT=8001
-TAP_LOG=/var/log/llm-tap/8000.jsonl
-```
-
-The service is deliberately supervised by systemd rather than daemonizing itself. This makes restarts, failures, and process ownership predictable.
+Docker is retained for legacy deployments. The native `llm-tap` package is the preferred installation method.
 
 ## Releases and APT repository
 
-Releases are built by GitHub Actions and published as a signed static APT repository on GitHub Pages. To publish a release, push a version tag such as `v0.1.1`.
+Releases are built by GitHub Actions and published as a signed static APT repository on GitHub Pages. Push a version tag such as `v0.1.1` to publish a release.
 
-The publication workflow builds packages for each supported Ubuntu release, generates APT metadata, signs the repository, and publishes the generated repository contents to the `gh-pages` branch.
-
-The first publication requires:
-
-1. Add an `APT_GPG_PRIVATE_KEY` repository Actions secret containing the ASCII-armored private signing key.
-2. Enable GitHub Pages for the repository using the `gh-pages` branch as the publishing source.
-3. Push a `v*` tag to trigger the build and publication workflow.
+The first publication requires an `APT_GPG_PRIVATE_KEY` repository Actions secret containing the ASCII-armored private signing key and GitHub Pages configured to publish the `gh-pages` branch.
 
 Keep the private signing key outside the repository. Only the public key is published at `apt-key.asc`.
 
@@ -147,35 +121,28 @@ One JSONL line is written per completion:
  "tokens": {"prompt_tokens": 3556, "completion_tokens": 93}}
 ```
 
-- `req_ts` = request arrival, `ts` = response completed (both local time); `dt` = seconds since the previous record (null for the first).
-- `prompt` = last real user message (context-mode's injected reminder is skipped; raw `prompt` field for `/v1/completions`); `context` = the full messages array, with tool calls summarized.
+- `req_ts` = request arrival, `ts` = response completed; `dt` = seconds since the previous record (null for the first).
+- `prompt` = last real user message; `context` = the full messages array, with tool calls summarized.
 - `tokens` appears when the client sends `stream_options.include_usage`.
 
 ## Live output
 
-The daemon also echoes captured traffic in a colorized, greppable format:
+The daemon also echoes captured traffic in a colorized, greppable format. When running under systemd:
 
 ```bash
 journalctl -u llm-tap -f
 ```
 
-- `IN` — input prompt, printed when the request reaches the proxy.
+- `IN` — input prompt.
 - `THINK` — reasoning from the completed response.
 - `OUT` — generated result.
-- Meta information is dimmed; non-200 responses are highlighted.
 
-The gap between `IN` and `OUT` represents real engine latency. A dangling `IN` with no `OUT` means the request is still queued/running or the client aborted.
-
-Clear the JSONL for a native install:
-
-```bash
-sudo -u llm-tap sh -c 'rm -f /var/log/llm-tap/*.jsonl'
-```
+The gap between `IN` and `OUT` represents engine latency. A dangling `IN` with no `OUT` means the request is still queued/running or the client aborted.
 
 Ad-hoc analysis reads the JSONL directly with standard tools such as `jq`.
 
 ## Notes
 
-- Native installs log to `/var/log/llm-tap/<engine-port>.jsonl` by default. Logs persist across reboots unless the host manages retention.
-- Cleartext prompts and answers are written to the log. Protect the log directory appropriately because anyone with read access can see captured inference traffic.
+- The default log location is `~/.local/state/llm-tap/<engine-port>.jsonl` for normal interactive runs. Systemd deployments should set `TAP_LOG` to `/var/log/llm-tap/<engine-port>.jsonl`.
+- Cleartext prompts and answers are written to the log. Protect the log appropriately because anyone with read access can see captured inference traffic.
 - Bypass the tap by stopping the service; clients can then target the engine's localhost port directly.
