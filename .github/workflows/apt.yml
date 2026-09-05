@@ -1,0 +1,142 @@
+name: Build and publish Ubuntu APT repository
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Debian package version (for example 0.1.0-1)'
+        required: true
+        default: '0.1.0-1'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ubuntu: '22.04'
+            codename: jammy
+          - ubuntu: '24.04'
+            codename: noble
+          - ubuntu: '26.04'
+            codename: resolute
+    runs-on: ubuntu-24.04
+    container: ubuntu:${{ matrix.ubuntu }}
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git python3 python3-venv python3-pip dpkg-dev
+
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build Debian package
+        env:
+          CODENAME: ${{ matrix.codename }}
+          ARCH: amd64
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            VERSION="${GITHUB_REF_NAME#v}-1"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          VERSION="$VERSION" CODENAME="$CODENAME" ARCH="$ARCH" packaging/build-deb.sh
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-tap-${{ matrix.codename }}-amd64
+          path: build/deb/*.deb
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install APT repository tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dpkg-dev apt-utils gnupg
+
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: incoming
+          pattern: llm-tap-*-amd64
+
+      - name: Check out APT pages branch
+        run: |
+          git fetch origin gh-pages:gh-pages || true
+          if git show-ref --verify --quiet refs/heads/gh-pages; then
+            git checkout gh-pages
+          else
+            git checkout --orphan gh-pages
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+      - name: Import signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          test -n "$APT_GPG_PRIVATE_KEY"
+          printf '%s\n' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          KEY_ID="$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "sec" {print $5; exit}')"
+          test -n "$KEY_ID"
+          echo "KEY_ID=$KEY_ID" >> "$GITHUB_ENV"
+          gpg --batch --armor --export "$KEY_ID" > apt-key.asc
+
+      - name: Add packages
+        run: |
+          set -euo pipefail
+          for artifact in incoming/llm-tap-*-amd64; do
+            codename="${artifact#incoming/llm-tap-}"
+            codename="${codename%-amd64}"
+            test -d "$artifact"
+            mkdir -p "pool/$codename/main/l/llm-tap"
+            find "$artifact" -maxdepth 1 -name '*.deb' -exec cp {} "pool/$codename/main/l/llm-tap/" \;
+          done
+
+      - name: Generate and sign repository metadata
+        run: |
+          set -euo pipefail
+          for codename in jammy noble resolute; do
+            pool="pool/$codename"
+            if ! find "$pool" -name '*.deb' -print -quit | grep -q .; then
+              continue
+            fi
+            mkdir -p "dists/$codename/main/binary-amd64"
+            dpkg-scanpackages "$pool" /dev/null | gzip -9c > "dists/$codename/main/binary-amd64/Packages.gz"
+            apt-ftparchive \
+              -o APT::FTPArchive::Release::Origin='Tec Fu' \
+              -o APT::FTPArchive::Release::Label='llm-tap' \
+              -o APT::FTPArchive::Release::Suite="$codename" \
+              -o APT::FTPArchive::Release::Codename="$codename" \
+              -o APT::FTPArchive::Release::Architectures='amd64' \
+              -o APT::FTPArchive::Release::Components='main' \
+              release "dists/$codename" > "dists/$codename/Release"
+            gpg --batch --yes --local-user "$KEY_ID" --clearsign \
+              -o "dists/$codename/InRelease" "dists/$codename/Release"
+            gpg --batch --yes --local-user "$KEY_ID" --armor --detach-sign \
+              -o "dists/$codename/Release.gpg" "dists/$codename/Release"
+          done
+
+      - name: Publish to GitHub Pages branch
+        run: |
+          set -euo pipefail
+          touch .nojekyll
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .nojekyll apt-key.asc dists pool
+          git diff --cached --quiet || git commit -m "Publish APT repository ${GITHUB_REF_NAME}"
+          git push origin gh-pages
