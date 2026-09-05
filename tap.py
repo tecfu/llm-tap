@@ -9,7 +9,7 @@ from mitmproxy import http
 
 UPSTREAM = os.environ.get("UPSTREAM", "http://127.0.0.1:8000")
 DEFAULT_PORT = os.environ.get("TAP_PORT", "8001")
-LOG_DIR = Path(os.environ.get("TAP_LOG_DIR", "/var/log/llm-tap"))
+LOG_DIR = Path(os.environ.get("TAP_LOG_DIR", Path.home() / ".local/state/llm-tap"))
 _port = UPSTREAM.rsplit(":", 1)[-1].split("/")[0]
 LOG = Path(os.environ.get("TAP_LOG", str(LOG_DIR / f"{_port if _port.isdigit() else 'tap'}.jsonl")))
 _last = None
