@@ -3,20 +3,97 @@
 A mitmproxy-based capture tap for **any OpenAI-compatible inference server**
 (vLLM, llama.cpp, ollama, …). It owns the port your clients already target,
 forwards to the engine untouched, and appends one JSON line per completion —
-prompt, full message context, reasoning, result — to
-`/tmp/llm-tap/<engine-port>.jsonl`.
+prompt, full message context, reasoning, result — to a JSONL file.
 
 ```
 agents ──► :TAP_PORT (llm-tap) ──► 127.0.0.1:$PORT (engine)
                      │
-                     └──► /tmp/llm-tap/<engine-port>.jsonl
+                     └──► $TAP_LOG (JSONL)
 ```
 
-## Run
+## Native installation
+
+The native distribution runs directly on Linux without Docker. Python 3.10+
+and `mitmproxy` are required.
+
+### Install from a checkout
 
 ```bash
-docker compose up -d              # taps localhost:$PORT (defaults from .env)
-PORT=8080 docker compose up -d    # engine port as an argument
+git clone https://github.com/tecfu/tap.git
+cd tap
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install .
+```
+
+Run it in the foreground with an engine on port 8000:
+
+```bash
+llm-tap --upstream http://127.0.0.1:8000 --listen-port 8001 \
+  --log /var/log/llm-tap/8000.jsonl
+```
+
+For a system-wide install, use a virtual environment such as
+`/opt/llm-tap` and point the systemd unit's `ExecStart` at that environment's
+`llm-tap` executable.
+
+### Environment configuration
+
+The launcher accepts these environment variables:
+
+- `UPSTREAM` — upstream inference server URL (default: `http://127.0.0.1:8000`)
+- `TAP_PORT` — local listening port (default: `8001`)
+- `TAP_LOG_DIR` — default directory for native JSONL logs (default:
+  `/var/log/llm-tap`)
+- `TAP_LOG` — complete JSONL path; overrides the generated log path
+
+CLI arguments override the corresponding defaults. `--foreground` is
+provided explicitly for service-manager deployments; the launcher already
+runs in the foreground by default.
+
+## systemd
+
+The repository includes `packaging/llm-tap.service` as a starting point for
+Linux daemon installation.
+
+Create the service account and log directory, install the application, then
+copy the unit into `/etc/systemd/system`:
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin llm-tap
+sudo install -d -o llm-tap -g llm-tap /var/log/llm-tap
+sudo install -d /etc/llm-tap
+sudo install -m 0644 packaging/llm-tap.service /etc/systemd/system/llm-tap.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now llm-tap
+```
+
+Configure the daemon in `/etc/llm-tap/llm-tap.env`:
+
+```ini
+UPSTREAM=http://127.0.0.1:8000
+TAP_PORT=8001
+TAP_LOG=/var/log/llm-tap/8000.jsonl
+```
+
+Check status and logs with:
+
+```bash
+systemctl status llm-tap
+journalctl -u llm-tap -f
+```
+
+The service is deliberately supervised by systemd rather than daemonizing
+itself. This makes restarts, failures, and process ownership predictable.
+
+## Docker
+
+Docker Compose remains supported:
+
+```bash
+docker compose up -d
+PORT=8080 docker compose up -d
 ```
 
 - Localhost-only: the tap forwards to `http://127.0.0.1:$PORT` and listens
@@ -56,7 +133,7 @@ in cyan, THINK = reasoning in magenta, OUT = result in green, meta dim,
 non-200 status red — prefixes make it greppable too):
 
 ```bash
-docker compose logs -f --no-log-prefix tap
+journalctl -u llm-tap -f
 ```
 
 IN is printed the instant the request hits the proxy (its own timestamp);
@@ -64,17 +141,21 @@ THINK/OUT when the response completes (their own timestamp). The vertical
 gap between the IN and OUT lines is real engine latency, and a dangling IN
 with no OUT means the request is still queued/running or the client aborted.
 
-Clear the JSONL: `docker compose exec tap sh -c 'rm -f /tmp/llm-tap/*.jsonl'`
+Clear the JSONL for a native install:
+
+```bash
+sudo -u llm-tap sh -c 'rm -f /var/log/llm-tap/*.jsonl'
+```
 
 Ad-hoc analysis reads the JSONL directly (host jq): `… | jq -s 'group_by(.client) | map({client: .[0].client, reqs: length, prompt_toks: (map(.tokens.prompt_tokens // 0) | add)})'`
 
 ## Notes
 
-- The log lives in `/tmp/llm-tap/<engine-port>.jsonl` — named for the port
-  the engine listens on (from `PORT`), so several engines can share one
-  tap host without mixing logs. Wiped on reboot (and by /tmp age cleaners),
-  never needs pruning; the addon recreates the directory on demand. On
-  tmpfs-backed /tmp it consumes RAM until reboot.
-- Cleartext prompts/answers: anyone with read access to /tmp sees them.
-- Bypass the tap: `docker compose stop tap` (clients must then target the
-  engine's localhost port directly); re-arm with `docker compose start tap`.
+- Native installs default to `/var/log/llm-tap/<engine-port>.jsonl`; Docker
+  retains `/tmp/llm-tap/<engine-port>.jsonl` for compatibility. Native logs
+  persist across reboots unless the host manages retention.
+- Cleartext prompts/answers are written to the log. Protect the log directory
+  appropriately because anyone with read access can see captured inference
+  traffic.
+- Bypass the tap by stopping the service/container; clients can then target
+  the engine's localhost port directly.
