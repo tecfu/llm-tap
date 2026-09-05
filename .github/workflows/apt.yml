@@ -40,11 +40,15 @@ jobs:
 
       - name: Build Debian package
         env:
-          VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}-1', github.ref_name) || inputs.version }}
           CODENAME: ${{ matrix.codename }}
           ARCH: amd64
         run: |
-          packaging/build-deb.sh
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            VERSION="${GITHUB_REF_NAME#v}-1"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          VERSION="$VERSION" CODENAME="$CODENAME" ARCH="$ARCH" packaging/build-deb.sh
 
       - name: Upload package
         uses: actions/upload-artifact@v4
