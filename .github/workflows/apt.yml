@@ -70,12 +70,11 @@ jobs:
         with:
           path: incoming
           pattern: llm-tap-*-amd64
-          merge-multiple: true
 
       - name: Check out APT pages branch
         run: |
           git fetch origin gh-pages:gh-pages || true
-          if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+          if git show-ref --verify --quiet refs/heads/gh-pages; then
             git checkout gh-pages
           else
             git checkout --orphan gh-pages
@@ -96,21 +95,15 @@ jobs:
       - name: Add packages
         run: |
           set -euo pipefail
-          for deb in incoming/*.deb; do
-            codename="$(dpkg-deb -f "$deb" Section >/dev/null 2>&1 && echo '')"
-            case "$deb" in
-              *jammy*) codename=jammy ;;
-              *noble*) codename=noble ;;
-              *resolute*) codename=resolute ;;
-              *) echo "Cannot determine Ubuntu series for $deb" >&2; exit 1 ;;
-            esac
+          for artifact in incoming/llm-tap-*-amd64; do
+            codename="${artifact#incoming/llm-tap-}"
+            codename="${codename%-amd64}"
+            test -d "$artifact"
             mkdir -p "pool/$codename/main/l/llm-tap"
-            cp "$deb" "pool/$codename/main/l/llm-tap/"
+            find "$artifact" -maxdepth 1 -name '*.deb' -exec cp {} "pool/$codename/main/l/llm-tap/" \;
           done
 
       - name: Generate and sign repository metadata
-        env:
-          APT_BASE_URL: https://tecfu.github.io/tap
         run: |
           set -euo pipefail
           for codename in jammy noble resolute; do
